@@ -20,7 +20,7 @@
 
 ## 安装
 
-一键安装（构建 + 装配到 profile，默认 `web`）：
+一键安装
 
 ```bash
 bash scripts/install.sh            # 或 bash scripts/install.sh <profile名>
@@ -31,7 +31,7 @@ bash scripts/install.sh            # 或 bash scripts/install.sh <profile名>
 - 重启 dsh 生效；运行中的 harness 免重启：`dev_inject_plugin <本目录>`。
 - 装配后**刷新浏览器页面**使用。
 
-## 构建（仅编译，不装配）
+## 构建
 
 ```bash
 npm install
