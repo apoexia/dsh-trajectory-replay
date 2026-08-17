@@ -449,14 +449,19 @@ export function apply(ctx: Context): void {
       const callNames = new Map<string, string>()
       let currentTurn = 0
       const inputByTurn = new Map<number, { sourceSeq: number; inputText: string }>()
-      const records: Array<{
-        kind: 'message' | 'tool'
+      // One record per (turn, step): every record inside a step shares the
+      // same fork cut (before step/start), so the picker folds a step's
+      // assistant message + tool calls into a single entry.
+      const steps = new Map<string, {
         turn: number
         step: number
-        sourceSeq: number
+        messageSeq?: number
+        messageLabel?: string
+        toolSeq?: number
+        toolNames: string[]
         callId?: string
-        label?: string
-      }> = []
+      }>()
+      const stepKey = (turn: number, step: number): string => `${turn}\u0000${step}`
       const textOf = (blocks: readonly { type?: string; text?: string }[] | undefined): string =>
         (blocks ?? [])
           .filter((block): block is { type: string; text: string } =>
@@ -481,16 +486,12 @@ export function apply(ctx: Context): void {
             step: number
             message?: { content?: readonly { type?: string; text?: string }[] }
           }
-          if (data.step >= 2 && (data.turn === 1 || turnEnds.has(data.turn - 1))) {
-            const text = textOf(data.message?.content).slice(0, 60)
-            records.push({
-              kind: 'message',
-              turn: data.turn,
-              step: data.step,
-              sourceSeq: event.seq,
-              ...(text === '' ? {} : { label: text }),
-            })
-          }
+          const entry = steps.get(stepKey(data.turn, data.step))
+            ?? { turn: data.turn, step: data.step, toolNames: [] }
+          entry.messageSeq = event.seq
+          const text = textOf(data.message?.content).slice(0, 60)
+          if (entry.messageLabel === undefined && text !== '') entry.messageLabel = text
+          steps.set(stepKey(data.turn, data.step), entry)
         } else if (event.type === 'tool/call') {
           const data = event.data as { callId?: string; name?: string }
           if (data.callId !== undefined && data.name !== undefined) {
@@ -500,24 +501,41 @@ export function apply(ctx: Context): void {
           const data = event.data as {
             turn: number
             step: number
-            message?: { callId?: string; content?: readonly { type?: string; text?: string }[] }
+            message?: { source?: { callId?: string }; content?: readonly { type?: string; text?: string }[] }
           }
-          if (data.step >= 2 && (data.turn === 1 || turnEnds.has(data.turn - 1))) {
-            const callId = data.message?.callId
-            const name = callId === undefined ? undefined : callNames.get(callId)
-            const text = textOf(data.message?.content).slice(0, 40)
-            records.push({
-              kind: 'tool',
-              turn: data.turn,
-              step: data.step,
-              sourceSeq: event.seq,
-              ...(callId === undefined ? {} : { callId }),
-              ...(name === undefined && text === ''
-                ? {}
-                : { label: [name, text].filter(part => part !== undefined && part !== '').join(' · ') }),
-            })
-          }
+          const entry = steps.get(stepKey(data.turn, data.step))
+            ?? { turn: data.turn, step: data.step, toolNames: [] }
+          entry.toolSeq ??= event.seq
+          const callId = data.message?.source?.callId
+          entry.callId ??= callId
+          const name = callId === undefined ? undefined : callNames.get(callId)
+          if (name !== undefined && !entry.toolNames.includes(name)) entry.toolNames.push(name)
+          steps.set(stepKey(data.turn, data.step), entry)
         }
+      }
+      const records: Array<{
+        kind: 'message' | 'tool'
+        turn: number
+        step: number
+        sourceSeq: number
+        callId?: string
+        label?: string
+      }> = []
+      for (const entry of [...steps.values()].sort((left, right) =>
+        left.turn - right.turn || left.step - right.step)) {
+        if (entry.step < 2 || (entry.turn !== 1 && !turnEnds.has(entry.turn - 1))) continue
+        const toolText = entry.toolNames.length > 0 ? entry.toolNames.join(', ') : undefined
+        const label = [entry.messageLabel, toolText].filter(Boolean).join(' · ')
+        records.push({
+          kind: entry.messageSeq !== undefined ? 'message' : 'tool',
+          turn: entry.turn,
+          step: entry.step,
+          sourceSeq: entry.messageSeq ?? entry.toolSeq ?? 0,
+          ...(entry.messageSeq !== undefined || entry.callId === undefined
+            ? {}
+            : { callId: entry.callId }),
+          ...(label === '' ? {} : { label }),
+        })
       }
       const checkpoints: Array<Record<string, unknown>> = []
       for (const [turn, input] of [...inputByTurn.entries()].sort((left, right) => left[0] - right[0])) {

@@ -2,6 +2,8 @@
 
 轨迹重现插件：把轨迹重放粒度细化到**具体某条 assistant 消息 / 工具调用**（记录级），提供原轨迹 vs 新执行对比、step 级单步门控与执行台账。纯插件实现，**不修改 harness**。
 
+![Trajectory Replay](docs/screenshot.png)
+
 ## 架构
 
 **host 半部**（`src/index.ts`，进程内 `ReplayRegistry`）
