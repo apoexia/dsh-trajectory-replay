@@ -1,0 +1,335 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #1f2329);
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary, #8a919f);
+}
+
+.badge {
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary, #4e5969);
+  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.04));
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.live {
+  font-size: 11px;
+  color: var(--dsw-alias-state-info-primary, #2563eb);
+}
+
+.error {
+  font-size: 11px;
+  color: var(--dsw-alias-state-error-primary, #d54941);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reset {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, #4e5969);
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.reset:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.04));
+}
+
+.checkpointList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.checkpointRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary, #1f2329);
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.checkpointRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.04));
+}
+
+.play {
+  color: var(--dsw-alias-state-info-primary, #2563eb);
+  font-size: 11px;
+  flex: none;
+}
+
+.checkpointTitle {
+  flex: none;
+  font-weight: 600;
+}
+
+.checkpointInput {
+  color: var(--dsw-alias-label-tertiary, #8a919f);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.placeholder {
+  color: var(--dsw-alias-label-tertiary, #8a919f);
+  font-size: 12px;
+  padding: 12px 0;
+}
+
+.columns {
+  display: flex;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.columnHeader {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary, #4e5969);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+}
+
+.sideScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ---- checkpoint picker rows ---- */
+.checkpointRowWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary, #1f2329);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.checkpointActions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+.mergeToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, #4e5969);
+  cursor: pointer;
+  flex: none;
+}
+
+/* ---- shared buttons ---- */
+.action {
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary, #4e5969);
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  padding: 3px 10px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.action:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.04));
+}
+
+.actionPrimary {
+  font-size: 12px;
+  color: #fff;
+  background: var(--dsw-alias-state-info-primary, #2563eb);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.actionPrimary:hover {
+  filter: brightness(1.08);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: none;
+}
+
+.paused {
+  font-size: 11px;
+  color: var(--dsw-alias-state-warning-primary, #d97706);
+}
+
+.done {
+  font-size: 11px;
+  color: var(--dsw-alias-state-success-primary, #0a9b5f);
+}
+
+.notice {
+  font-size: 11px;
+  color: var(--dsw-alias-state-info-primary, #2563eb);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40ch;
+}
+
+/* ---- merged pre-checkpoint block ---- */
+.mergedRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary, #4e5969);
+  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.03));
+  border: 1px dashed var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.12));
+  border-radius: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+
+.mergedRow:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.06));
+}
+
+.mergedCaret {
+  flex: none;
+}
+
+.mergedLabel {
+  font-weight: 600;
+}
+
+.mergedHint {
+  margin-left: auto;
+  color: var(--dsw-alias-label-tertiary, #8a919f);
+}
+
+/* ---- step ledger ---- */
+.ledger {
+  flex: none;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ledgerHeader {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary, #4e5969);
+}
+
+.ledgerRow {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.ledgerStep {
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary, #1f2329);
+}
+
+.ledgerText {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  color: var(--dsw-alias-label-secondary, #4e5969);
+}
+
+.ledgerCall {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 8px;
+  border-left: 2px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+}
+
+.ledgerCallOk {
+  color: var(--dsw-alias-state-success-primary, #0a9b5f);
+}
+
+.ledgerCallError {
+  color: var(--dsw-alias-state-error-primary, #d54941);
+}
+
+.ledgerArgs {
+  font-size: 10px;
+  color: var(--dsw-alias-label-tertiary, #8a919f);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ledgerResult {
+  font-size: 10px;
+  color: var(--dsw-alias-label-secondary, #4e5969);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

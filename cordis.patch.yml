@@ -1,0 +1,5 @@
+# dsh-trajectory-replay bundle layer: mounts the trajectory-replay plugin.
+- insert:
+    - id: dsh-trajectory-replay
+      name: '@dsh-external/dsh-trajectory-replay'
+      config: {}
