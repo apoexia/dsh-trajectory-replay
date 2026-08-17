@@ -40,6 +40,16 @@ export const name = 'dsh-trajectory-replay'
 /** Services the host half needs unconditionally. */
 export const inject = ['agents', 'sessions', 'webServer', 'agentDefaultModel']
 
+/**
+ * Model-visible context carrier that opens the continuation turn of a record
+ * replay. The agent driver requires an inbox message to start a turn, so a
+ * record replay submits this neutral plugin-source context message (rendered
+ * as a context row, exactly like the harness's own injected context) — the
+ * model request then derives from the seeded log and re-generates the chosen
+ * record and everything after it.
+ */
+const CONTINUATION_CONTEXT_TEXT = '（轨迹重放：从该记录点继续执行）'
+
 /** A resolved gate: the client's `continue` control releases it. */
 interface PendingGate {
   resolve: () => void
@@ -109,6 +119,9 @@ function respond(res: ServerResponse, status: number, body: Record<string, unkno
 
 /** Resolve the fork cut for an anchor: the first turn/end at-or-after the anchor, then the next turn/start. */
 function forkCut(events: readonly SessionEvent[], anchorSeq: number): number {
+  // anchorSeq 0 = replay the first turn from an empty prefix (no prior turn
+  // to cut at): the child seed is empty and the replayed input starts turn 1.
+  if (anchorSeq <= 0) return 0
   const boundary = events.find((event) => event.type === 'turn/end' && event.seq >= anchorSeq)
   if (boundary === undefined) return -1
   let cut = boundary.seq + 1
@@ -258,10 +271,21 @@ export function apply(ctx: Context): void {
         jsonError(res, 404, 'source session is not attached')
         return
       }
+      // 'turn' replays fork at a previous turn's boundary and re-submit the
+      // turn's user input; 'message'/'tool' replays cut before the record's
+      // step and continue the conversation from the log via a context carrier.
+      const kind = body.kind === 'message' || body.kind === 'tool' ? body.kind : 'turn'
+      const recordTurn = typeof body.turn === 'number' && Number.isSafeInteger(body.turn) && body.turn >= 1 ? body.turn : -1
+      const recordStep = typeof body.step === 'number' && Number.isSafeInteger(body.step) && body.step >= 1 ? body.step : -1
       const anchorSeq = typeof body.anchorSeq === 'number' && Number.isSafeInteger(body.anchorSeq) && body.anchorSeq >= 0 ? body.anchorSeq : -1
       const inputText = typeof body.inputText === 'string' && body.inputText.trim() !== '' ? body.inputText : ''
-      if (anchorSeq < 0 || inputText === '') {
-        jsonError(res, 400, 'anchorSeq (non-negative integer) and inputText (non-empty) are required')
+      if (kind === 'turn') {
+        if (anchorSeq < 0 || inputText === '') {
+          jsonError(res, 400, 'anchorSeq (non-negative integer) and inputText (non-empty) are required for turn replays')
+          return
+        }
+      } else if (recordTurn < 1 || recordStep < 2) {
+        jsonError(res, 400, 'record replays require turn (≥ 1) and step (≥ 2) — step 1 records replay as the turn checkpoint')
         return
       }
       const mode = body.mode === 'step' ? 'step' : 'auto'
@@ -273,12 +297,50 @@ export function apply(ctx: Context): void {
         await disposeRun(childId)
       }
 
-      const cut = forkCut(source.events, anchorSeq)
-      if (cut < 0) {
-        jsonError(res, 409, 'the anchor does not fall in a completed turn; cannot fork')
-        return
+      // A record replay cuts before the record's step (the model re-decides
+      // that assistant message / tool call and everything after) and closes
+      // the source turn with a synthetic interrupted closer, so the seed
+      // stays valid for the session validator; the child then continues the
+      // conversation from the log via a plugin-source context carrier (no
+      // re-submitted user input). Step-1 records are the turn's own
+      // checkpoint, not forkable here — the client maps them to the turn
+      // replay.
+      const recordReplay = kind !== 'turn'
+      let cut: number
+      let replayedTurn: number
+      let seed: readonly SessionEvent[]
+      if (recordReplay) {
+        const startIndex = source.events.findIndex((event) =>
+          event.type === 'step/start'
+          && (event.data as { turn: number }).turn === recordTurn
+          && (event.data as { turn: number; step: number }).step === recordStep)
+        if (startIndex <= 0) {
+          jsonError(res, 409, `step ${recordStep} of turn ${recordTurn} is not in the source log; cannot fork`)
+          return
+        }
+        cut = startIndex
+        const last = source.events[cut - 1]!
+        seed = [
+          ...source.events.slice(0, cut),
+          {
+            type: 'turn/end',
+            seq: last.seq + 1,
+            time: Date.now(),
+            data: { turn: recordTurn, reason: { kind: 'interrupted' } },
+          },
+        ]
+        replayedTurn = recordTurn + 1
+      } else {
+        cut = forkCut(source.events, anchorSeq)
+        if (cut < 0) {
+          jsonError(res, 409, 'the anchor does not fall in a completed turn; cannot fork')
+          return
+        }
+        seed = source.events.slice(0, cut)
+        replayedTurn = cut < source.events.length
+          ? (source.events[cut]?.data as { turn: number }).turn
+          : 1
       }
-      const seed = source.events.slice(0, cut)
       const defaultSelection = ctx.agentDefaultModel.currentSelection()
       const agentOptions = selectionForSource(source, defaultSelection)
       let composition
@@ -297,7 +359,7 @@ export function apply(ctx: Context): void {
           seed,
           meta: {
             ...(source.header.cwd === undefined ? {} : { cwd: source.header.cwd }),
-            seedLength: cut,
+            seedLength: seed.length,
             // 'subagent' hides the child from workspace/sidebar grouping while
             // keeping it in the list mirror (bindings + live frames work).
             origin: 'subagent',
@@ -312,7 +374,9 @@ export function apply(ctx: Context): void {
       }
 
       // Merge the pre-checkpoint history into one summary node (best-effort).
-      if (merge) {
+      // Record replays skip it: their prefix ends mid-turn, which the
+      // compaction region fold does not close cleanly.
+      if (merge && !recordReplay) {
         const compaction = ctx.get('compaction')
         if (compaction !== undefined) {
           try {
@@ -338,14 +402,139 @@ export function apply(ctx: Context): void {
         gate: null,
       })
 
-      // Submit the replayed input; the gate (step mode) pauses before the
-      // second request onward.
-      handle.agent.followup(createUserMessage({
-        content: [{ type: 'text', text: inputText }],
-        source: { kind: 'user' },
-      }))
+      // A turn replay re-submits the turn's user input. A record replay
+      // continues the seeded log instead: the driver needs an inbox message
+      // to open its next turn, so we submit a neutral plugin-source context
+      // carrier — the model request then derives from the seeded history and
+      // re-generates the chosen record and everything after it. The gate,
+      // registered above, pauses before the second request onward.
+      handle.agent.followup(createUserMessage(recordReplay
+        ? {
+          content: [{ type: 'text', text: CONTINUATION_CONTEXT_TEXT }],
+          source: { kind: 'plugin', plugin: name },
+        }
+        : {
+          content: [{ type: 'text', text: inputText }],
+          source: { kind: 'user' },
+        }))
 
-      respond(res, 200, { ok: true, childId })
+      respond(res, 200, { ok: true, childId, replayedTurn })
+    },
+  }))
+
+  // ---- POST /api/replay/checkpoints ------------------------------------
+  // Derive the FULL replay checkpoint list from the source session's complete
+  // event log. The browser window is paged, so client-side derivation only
+  // sees the loaded tail; the host log is the complete authority, and this
+  // route lets the replay picker list every replayable turn/record.
+  routeDisposers.push(ctx.webServer.register({
+    kind: 'exact',
+    path: '/api/replay/checkpoints',
+    handler: async (req, res) => {
+      let body: Record<string, unknown>
+      try {
+        const parsed = await readJsonBody(req)
+        body = typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
+      } catch (error) {
+        jsonError(res, 400, error instanceof Error ? error.message : String(error))
+        return
+      }
+      const source = sourceSession(body.originalId)
+      if (source === undefined) {
+        jsonError(res, 404, 'source session is not attached')
+        return
+      }
+      const events = source.events
+      const turnEnds = new Map<number, number>()
+      const callNames = new Map<string, string>()
+      let currentTurn = 0
+      const inputByTurn = new Map<number, { sourceSeq: number; inputText: string }>()
+      const records: Array<{
+        kind: 'message' | 'tool'
+        turn: number
+        step: number
+        sourceSeq: number
+        callId?: string
+        label?: string
+      }> = []
+      const textOf = (blocks: readonly { type?: string; text?: string }[] | undefined): string =>
+        (blocks ?? [])
+          .filter((block): block is { type: string; text: string } =>
+            block.type === 'text' && typeof block.text === 'string' && block.text !== '')
+          .map(block => block.text)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+      for (const event of events) {
+        if (event.type === 'turn/start') {
+          currentTurn = (event.data as { turn: number }).turn
+        } else if (event.type === 'turn/end') {
+          turnEnds.set((event.data as { turn: number }).turn, event.seq)
+        } else if (event.type === 'user/message') {
+          const text = textOf((event.data as { content?: readonly { type?: string; text?: string }[] }).content)
+          if (text !== '' && currentTurn > 0 && !inputByTurn.has(currentTurn)) {
+            inputByTurn.set(currentTurn, { sourceSeq: event.seq, inputText: text })
+          }
+        } else if (event.type === 'assistant/message') {
+          const data = event.data as {
+            turn: number
+            step: number
+            message?: { content?: readonly { type?: string; text?: string }[] }
+          }
+          if (data.step >= 2 && (data.turn === 1 || turnEnds.has(data.turn - 1))) {
+            const text = textOf(data.message?.content).slice(0, 60)
+            records.push({
+              kind: 'message',
+              turn: data.turn,
+              step: data.step,
+              sourceSeq: event.seq,
+              ...(text === '' ? {} : { label: text }),
+            })
+          }
+        } else if (event.type === 'tool/call') {
+          const data = event.data as { callId?: string; name?: string }
+          if (data.callId !== undefined && data.name !== undefined) {
+            callNames.set(data.callId, data.name)
+          }
+        } else if (event.type === 'tool/result') {
+          const data = event.data as {
+            turn: number
+            step: number
+            message?: { callId?: string; content?: readonly { type?: string; text?: string }[] }
+          }
+          if (data.step >= 2 && (data.turn === 1 || turnEnds.has(data.turn - 1))) {
+            const callId = data.message?.callId
+            const name = callId === undefined ? undefined : callNames.get(callId)
+            const text = textOf(data.message?.content).slice(0, 40)
+            records.push({
+              kind: 'tool',
+              turn: data.turn,
+              step: data.step,
+              sourceSeq: event.seq,
+              ...(callId === undefined ? {} : { callId }),
+              ...(name === undefined && text === ''
+                ? {}
+                : { label: [name, text].filter(part => part !== undefined && part !== '').join(' · ') }),
+            })
+          }
+        }
+      }
+      const checkpoints: Array<Record<string, unknown>> = []
+      for (const [turn, input] of [...inputByTurn.entries()].sort((left, right) => left[0] - right[0])) {
+        const anchorSeq = turn === 1 ? 0 : turnEnds.get(turn - 1)
+        if (anchorSeq === undefined) continue
+        checkpoints.push({
+          kind: 'turn',
+          turn,
+          sourceSeq: input.sourceSeq,
+          anchorSeq,
+          inputText: input.inputText,
+        })
+      }
+      records.sort((left, right) =>
+        left.turn - right.turn || left.step - right.step || left.sourceSeq - right.sourceSeq)
+      for (const record of records) checkpoints.push(record)
+      respond(res, 200, { ok: true, checkpoints })
     },
   }))
 

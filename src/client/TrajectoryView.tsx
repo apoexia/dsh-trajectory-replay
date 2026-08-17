@@ -26,7 +26,7 @@ import {
 import { trajectoryRecordId } from './trajectory-record.ts'
 import { TrajectorySearchIndex } from './trajectory-search-index.ts'
 import { EMPTY_TRAJECTORY_SNAPSHOT } from './trajectory-snapshot-builder.ts'
-import { deriveReplayCheckpoints } from './replay-checkpoints.ts'
+import { deriveReplayCheckpoints, recordCheckpointKey } from './replay-checkpoints.ts'
 import type { ReplayCheckpoint, ReplayState } from './replay-state.ts'
 import css from './views.module.css'
 
@@ -153,12 +153,37 @@ export function TrajectoryView({
     [sessionSnapshot],
   )
   const replayableTurns = useMemo(
-    () => new Set(replayCheckpoints.map(checkpoint => checkpoint.turn)),
+    () => new Set(replayCheckpoints
+      .filter(checkpoint => checkpoint.kind === 'turn')
+      .map(checkpoint => checkpoint.turn)),
     [replayCheckpoints],
   )
   const checkpointByTurn = useMemo(
-    () => new Map(replayCheckpoints.map(checkpoint => [checkpoint.turn, checkpoint] as const)),
+    () => new Map(replayCheckpoints
+      .filter(checkpoint => checkpoint.kind === 'turn')
+      .map(checkpoint => [checkpoint.turn, checkpoint] as const)),
     [replayCheckpoints],
+  )
+  const recordCheckpoints = useMemo(
+    () => replayCheckpoints.filter(
+      (checkpoint): checkpoint is ReplayCheckpoint & { kind: 'message' | 'tool' } =>
+        checkpoint.kind !== 'turn',
+    ),
+    [replayCheckpoints],
+  )
+  const replayableRecords = useMemo(
+    () => new Set(recordCheckpoints
+      .map(checkpoint => recordCheckpointKey(
+        checkpoint.kind, checkpoint.turn, checkpoint.step ?? 0, checkpoint.callId,
+      ))),
+    [recordCheckpoints],
+  )
+  const checkpointByRecordKey = useMemo(
+    () => new Map(recordCheckpoints
+      .map(checkpoint => [recordCheckpointKey(
+        checkpoint.kind, checkpoint.turn, checkpoint.step ?? 0, checkpoint.callId,
+      ), checkpoint] as const)),
+    [recordCheckpoints],
   )
   const replayBusy = replayState.phase === 'starting' || replayState.phase === 'running'
   const historyLoading = useSession(snapshot => snapshot.openState === 'loading')
@@ -523,6 +548,11 @@ export function TrajectoryView({
             replayableTurns,
             onReplay: (turn) => {
               const checkpoint = checkpointByTurn.get(turn)
+              if (checkpoint !== undefined) onReplay(checkpoint)
+            },
+            replayableRecords,
+            onReplayRecord: (key) => {
+              const checkpoint = checkpointByRecordKey.get(key)
               if (checkpoint !== undefined) onReplay(checkpoint)
             },
             busy: replayBusy,

@@ -22,20 +22,32 @@ import type {
 } from '@deepseek-ai/dsh-client-runtime/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 
-/** One checkpoint derived from a trajectory turn: fork anchor + replayed input. */
+/** One checkpoint: a turn-level fork anchor, or a record-level fork (a
+ * specific assistant message / tool call inside a turn, step ≥ 2). */
 export interface ReplayCheckpoint {
-  /** Turn number this checkpoint belongs to (the turn that gets replayed). */
+  /** 'turn' re-runs a whole turn from its user input; 'message'/'tool'
+   *  re-run from the step owning one assistant message or tool call. */
+  readonly kind: 'turn' | 'message' | 'tool'
+  /** Turn number this checkpoint belongs to (the source turn). */
   readonly turn: number
   /** Source event seq of the replayed user message (display anchor). */
   readonly sourceSeq: number
   /**
-   * Fork anchor: a seq inside the previous turn. The host's
-   * first-`turn/end`-at-or-after cut therefore ends the child prefix at the
-   * previous turn's boundary, so the replayed turn starts from scratch.
+   * Fork anchor: for turn 1 this is 0 (empty prefix — replay the very first
+   * turn from scratch); for later turns it is a seq inside the previous
+   * turn. The host's first-`turn/end`-at-or-after cut therefore ends the
+   * child prefix at the previous turn's boundary, so the replayed turn
+   * starts from scratch. Unused for record checkpoints.
    */
   readonly anchorSeq: number
-  /** Re-submitted input text for the replayed turn. */
+  /** Re-submitted input text for the replayed turn (turn checkpoints). */
   readonly inputText: string
+  /** Record checkpoints: the source step owning the replayed record (≥ 2). */
+  readonly step?: number
+  /** Tool checkpoints: the tool call id (stable row identity in the table). */
+  readonly callId?: string
+  /** Short display label for record checkpoints (tool name / message text). */
+  readonly label?: string
 }
 
 export type ReplayMode = 'auto' | 'step'
@@ -47,6 +59,10 @@ export interface ReplayState {
   readonly originalId: SessionId | null
   readonly childId: SessionId | null
   readonly checkpoint: ReplayCheckpoint | null
+  /** The child's turn number that carries the replayed work (turn replays
+   *  reuse the checkpoint turn; record replays run the continuation as the
+   *  checkpoint turn + 1). */
+  readonly replayedTurn: number
   readonly mode: ReplayMode
   /** Step-mode target: executed steps before the next gate pause. */
   readonly stopAt: number
@@ -62,6 +78,7 @@ export const EMPTY_REPLAY_STATE: ReplayState = {
   originalId: null,
   childId: null,
   checkpoint: null,
+  replayedTurn: 0,
   mode: 'auto',
   stopAt: 0,
   executedSteps: 0,
@@ -87,6 +104,8 @@ interface ReplayReply {
   error?: string
   childId?: string
   sessionId?: string
+  /** The child turn number carrying the replayed work (record replays continue as turn + 1). */
+  replayedTurn?: number
 }
 
 /** POST one replay route with a JSON body (same-origin; the webserver serves both). */
@@ -172,6 +191,25 @@ class ReplaySessionSource implements ObservableSnapshot<ConversationSnapshot | n
     const session = id === null ? undefined : this.sessions.binding(id)?.session
     if (session !== undefined) {
       this.detachSession = session.subscribe(() => this.emit())
+      // The SessionFace deliberately hides window staging (open is a runtime
+      // internal); the replay child is never the selected/current session, so
+      // nothing else would pull its history window — without it the comparison
+      // pane gets a cold snapshot with no nodes. Open it in the background
+      // through the concrete Session (idempotent no-op for the already-open
+      // source session), then page through every earlier window so the whole
+      // trajectory is visible for replay (the checkpoint list and both
+      // comparison columns read the same Session snapshot).
+      const withOpen = session as { open?: () => Promise<void> }
+      if (typeof withOpen.open === 'function') {
+        // The SessionFace deliberately hides window staging (open is a runtime
+        // internal); the replay child is never the selected/current session, so
+        // nothing else would pull its history window — without it the comparison
+        // pane gets a cold snapshot with no nodes. Open it in the background
+        // through the concrete Session (idempotent no-op for the already-open
+        // source session). The window stays paged (browser windows are bounded);
+        // the FULL replayable checkpoint list comes from the host route.
+        void withOpen.open!()
+      }
     }
     this.emit()
   }
@@ -191,6 +229,7 @@ class ReplaySessionSource implements ObservableSnapshot<ConversationSnapshot | n
 function deriveRun(
   snapshot: ConversationSnapshot | null,
   checkpoint: ReplayCheckpoint | null,
+  replayedTurn: number,
   mode: ReplayMode,
   stopAt: number,
   sawRunning: boolean,
@@ -202,7 +241,7 @@ function deriveRun(
   const inspection = snapshot.views.get('trajectory')
   const requests = inspection?.requests ?? []
   const turnRequests = requests.filter(
-    (request) => request.purpose === 'assistant' && request.turn === checkpoint.turn,
+    (request) => request.purpose === 'assistant' && request.turn === replayedTurn,
   )
   const executedSteps = turnRequests.length
   const running = snapshot.running === true
@@ -266,6 +305,7 @@ export class ReplayController {
     const derived = deriveRun(
       snapshot,
       current.checkpoint,
+      current.replayedTurn !== 0 ? current.replayedTurn : current.checkpoint?.turn ?? 0,
       current.mode,
       current.stopAt,
       this.sawRunning,
@@ -308,6 +348,7 @@ export class ReplayController {
       originalId,
       childId: null,
       checkpoint,
+      replayedTurn: 0,
       mode,
       stopAt,
       executedSteps: 0,
@@ -316,8 +357,17 @@ export class ReplayController {
     try {
       const reply = await replayCall('start', {
         originalId,
-        anchorSeq: checkpoint.anchorSeq,
-        inputText: checkpoint.inputText,
+        ...(checkpoint.kind === 'turn'
+          ? {
+            kind: 'turn',
+            anchorSeq: checkpoint.anchorSeq,
+            inputText: checkpoint.inputText,
+          }
+          : {
+            kind: checkpoint.kind,
+            turn: checkpoint.turn,
+            step: checkpoint.step ?? 0,
+          }),
         mode,
         stopAt,
         merge,
@@ -333,6 +383,9 @@ export class ReplayController {
       this.state.set({
         ...this.state.getSnapshot(),
         childId: reply.childId as SessionId,
+        replayedTurn: typeof reply.replayedTurn === 'number'
+          ? reply.replayedTurn
+          : checkpoint.turn,
       })
     } catch (error) {
       this.state.set({
@@ -543,11 +596,16 @@ export function buildTrajectoryMarkdown(
   if (state.mode === 'step') lines.push(`- 目标步骤: ${state.stopAt}`)
   lines.push(`- 合并检查点之前: ${state.merge ? '是' : '否'}`)
   if (checkpoint !== null) {
-    lines.push(`- checkpoint: Turn ${checkpoint.turn}（源 seq ${checkpoint.sourceSeq}，锚点 seq ${checkpoint.anchorSeq}）`)
-    lines.push('', '## 重放输入', '', '```text', checkpoint.inputText, '```')
+    lines.push(checkpoint.kind !== 'turn'
+      ? `- checkpoint: Turn ${checkpoint.turn} · Step ${checkpoint.step ?? '?'}${checkpoint.label === undefined ? '' : ` · ${checkpoint.label}`}（源 seq ${checkpoint.sourceSeq}）`
+      : `- checkpoint: Turn ${checkpoint.turn}（源 seq ${checkpoint.sourceSeq}，锚点 seq ${checkpoint.anchorSeq}）`)
+    if (checkpoint.kind === 'turn') {
+      lines.push('', '## 重放输入', '', '```text', checkpoint.inputText, '```')
+    }
   }
   lines.push('', '## 重放执行')
-  const rows = checkpoint === null ? [] : deriveStepLedger(childSnapshot, checkpoint.turn)
+  const replayedTurn = state.replayedTurn !== 0 ? state.replayedTurn : checkpoint?.turn ?? 0
+  const rows = checkpoint === null ? [] : deriveStepLedger(childSnapshot, replayedTurn)
   if (rows.length === 0) {
     lines.push('', '_（尚无已执行步骤）_')
   }

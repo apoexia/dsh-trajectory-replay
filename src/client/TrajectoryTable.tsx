@@ -20,6 +20,7 @@ import type {
   AssistantMetricDetail, TrajectoryCellKind, TrajectoryCellProps, TrajectorySourceBlock,
 } from './trajectory-record.ts'
 import { formatElapsedSeconds, trajectoryRecordId } from './trajectory-record.ts'
+import { recordCheckpointKey } from './replay-checkpoints.ts'
 import {
   groupTrajectoryVirtualRows, trajectoryVirtualRecordKey,
 } from './trajectory-virtual-rows.ts'
@@ -126,6 +127,12 @@ interface TableRecord {
   turnEnd: boolean
   collapsedSummary?: string
   collapsedSummaryKind?: 'turn' | 'assistant'
+}
+
+/** Step number from a step group title (`Step N`), 0 when the row is not a step. */
+function recordStepFromGroup(group: string): number {
+  const match = /^Step (\d+)$/.exec(group)
+  return match === null ? 0 : Number(match[1])
 }
 
 interface VirtualRowStructure {
@@ -387,12 +394,16 @@ export interface TrajectoryTableProps {
   inspectCallId?: string | null
   /** Acknowledge a consumed (or unresolvable) inspect request. */
   onInspectApplied?: (() => void) | undefined
-  /** Trajectory-replay controls: per-turn replay buttons on turn-start rows. */
+  /** Trajectory-replay controls: per-turn and per-record replay buttons. */
   replay?: {
     /** Turn numbers that expose a replay button (derived checkpoints). */
     replayableTurns?: ReadonlySet<number>
     /** Start a replay for one replayable turn. */
     onReplay?: (turn: number) => void
+    /** Record checkpoint keys (assistant messages / tool calls, step ≥ 2) that expose a replay button. */
+    replayableRecords?: ReadonlySet<string>
+    /** Start a replay for one replayable record (keyed by `recordCheckpointKey`). */
+    onReplayRecord?: (key: string) => void
     /** Whether a replay is in flight (buttons disabled). */
     busy?: boolean
   }
@@ -2290,6 +2301,11 @@ export function TrajectoryTable({
                   const isInitialSystem = record.cell.kind === 'system'
                 && record.cell.index === allRecords[0]?.cell.index
                   const key = requestKey(record.turn, record.group)
+                  const recordStep = recordStepFromGroup(record.group)
+                  const recordKey = !isCollapsedSummary && !isRequestOnly
+                    && (record.cell.kind === 'message' || record.cell.kind === 'tool')
+                    ? recordCheckpointKey(record.cell.kind, record.turn ?? 0, recordStep, record.cell.callId)
+                    : null
                   const request = requestBoundaries.get(key) === record.cell.index
                 && !isCollapsedSummary
                 && (record.turn === null || !collapsedTurns.has(record.turn))
@@ -2388,20 +2404,44 @@ export function TrajectoryTable({
                       }}
                     >
                       <td className={css.event}>
-                        {replay?.replayableTurns?.has(record.turn ?? -1) === true
-                          && record.turnStart
-                          && replay.onReplay !== undefined
+                        {replay?.onReplay !== undefined
                           && record.turn !== null
+                          && record.turnStart
                           && (
                           <button
                             type="button"
                             className={css.replayButton}
                             aria-label={`replay turn ${record.turn}`}
                             title={`从 Turn ${record.turn} 重放 agent`}
-                            disabled={replay.busy === true}
+                            disabled={replay.busy === true
+                              || replay.replayableTurns?.has(record.turn) !== true}
                             onClick={(event) => {
                               event.stopPropagation()
                               replay.onReplay!(record.turn!)
+                            }}
+                            onDoubleClick={(event) => { event.stopPropagation() }}
+                          >
+                            ▶
+                          </button>
+                        )}
+                        {replay?.onReplayRecord !== undefined
+                          && record.turn !== null
+                          && recordKey !== null
+                          && recordStep >= 2
+                          && !record.turnStart
+                          && (
+                          <button
+                            type="button"
+                            className={css.replayButton}
+                            aria-label={`replay from ${record.cell.kind} ${record.turn}.${recordStep}`}
+                            title={record.cell.kind === 'tool'
+                              ? `从 Turn ${record.turn} · Step ${recordStep} 的工具调用重放`
+                              : `从 Turn ${record.turn} · Step ${recordStep} 的 assistant 消息重放`}
+                            disabled={replay.busy === true
+                              || replay.replayableRecords?.has(recordKey) !== true}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              replay.onReplayRecord!(recordKey)
                             }}
                             onDoubleClick={(event) => { event.stopPropagation() }}
                           >

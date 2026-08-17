@@ -23,8 +23,13 @@ export type TrajectoryKey =
   | 'replay.title'
   | 'replay.idleHint'
   | 'replay.noCheckpoint'
+  | 'replay.loadingCheckpoints'
   | 'replay.fromTurn'
+  | 'replay.fromRecord'
+  | 'replay.recordCount'
   | 'replay.checkpointBadge'
+  | 'replay.checkpointBadgeRecord'
+  | 'replay.executingStep'
   | 'replay.running'
   | 'replay.reset'
   | 'replay.original'
@@ -79,8 +84,13 @@ export const zh: Record<TrajectoryKey, string> = {
   'replay.title': '轨迹重放',
   'replay.idleHint': '选择重放模式：自动跑完并对比，或单步执行（每个模型请求/工具调用后暂停，点击继续）。',
   'replay.noCheckpoint': '当前会话没有可重放的回合（需要至少一个已结束的上一回合与文本输入）。',
+  'replay.loadingCheckpoints': '正在加载全部可重放点…',
   'replay.fromTurn': '从 Turn {turn} 重放',
+  'replay.fromRecord': '从 Turn {turn} · Step {step} 重放',
+  'replay.recordCount': '· {count} 个记录点',
   'replay.checkpointBadge': 'checkpoint · Turn {turn} · seq {seq}',
+  'replay.checkpointBadgeRecord': 'checkpoint · Turn {turn} · Step {step}',
+  'replay.executingStep': '正在执行第 {step} 步（模型生成中）…',
   'replay.running': '● 重放执行中…',
   'replay.reset': '重置',
   'replay.original': '原轨迹（记录）',
@@ -129,8 +139,13 @@ export const en: Record<TrajectoryKey, string> = {
   'replay.title': 'Trajectory replay',
   'replay.idleHint': 'Pick a replay mode: run the turn to completion and compare, or step through it (pauses after every model request / tool call).',
   'replay.noCheckpoint': 'No replayable turn in this session (need a closed previous turn with a text input).',
+  'replay.loadingCheckpoints': 'Loading all replayable points…',
   'replay.fromTurn': 'Replay from Turn {turn}',
+  'replay.fromRecord': 'Replay from Turn {turn} · Step {step}',
+  'replay.recordCount': '· {count} records',
   'replay.checkpointBadge': 'checkpoint · Turn {turn} · seq {seq}',
+  'replay.checkpointBadgeRecord': 'checkpoint · Turn {turn} · Step {step}',
+  'replay.executingStep': 'Executing step {step} (model generating)…',
   'replay.running': '● replaying…',
   'replay.reset': 'Reset',
   'replay.original': 'Original (recorded)',

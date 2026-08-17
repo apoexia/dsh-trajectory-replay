@@ -156,6 +156,62 @@
   padding: 6px 10px;
 }
 
+/* ---- checkpoint picker: per-turn collapsible groups ---- */
+.turnGroup {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.turnGroupHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-primary, #1f2329);
+  background: var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.02));
+  cursor: pointer;
+  user-select: none;
+}
+
+.turnGroupToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  flex: none;
+}
+
+.turnGroupCaret {
+  display: inline-block;
+  width: 12px;
+  color: var(--dsw-alias-label-secondary, #4e5969);
+}
+
+.turnGroupTitle {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.turnGroupCount {
+  color: var(--dsw-alias-label-secondary, #4e5969);
+  font-weight: 400;
+}
+
+.turnGroupRecords {
+  border-top: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.08));
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .checkpointActions {
   margin-left: auto;
   display: flex;

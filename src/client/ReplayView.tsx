@@ -4,7 +4,7 @@
  * (original left, replayed right). Pre-checkpoint history is merged into a
  * collapsible block on both sides.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { InjectFace, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
@@ -18,7 +18,7 @@ import {
   deriveTrajectoryRequestNumbers,
   deriveTrajectoryTableTurns,
 } from './trajectory-table-model.ts'
-import { deriveReplayCheckpoints } from './replay-checkpoints.ts'
+import { fetchReplayCheckpoints } from './replay-checkpoints.ts'
 import { ReplayConversation } from './ReplayConversation.tsx'
 import {
   buildTrajectoryMarkdown,
@@ -47,6 +47,7 @@ export interface ReplayViewInjected {
 
 const EMPTY_TURNS = new Set<number>()
 const EMPTY_ASSISTANTS = new Set<string>()
+const EMPTY_CHECKPOINTS: readonly ReplayCheckpoint[] = []
 
 interface SideTableProps {
   snapshot: ConversationSnapshot | null
@@ -144,7 +145,7 @@ function downloadText(text: string, filename: string, mime: string): void {
  * @returns the replay view (checkpoint picker when idle, run view otherwise).
  */
 export function ReplayView({
-  useSession,
+  sessionId,
   useReplayState,
   useReplayChild,
   useReplayOriginal,
@@ -156,22 +157,65 @@ export function ReplayView({
   const state = useReplayState(value => value)
   const childSnapshot = useReplayChild(value => value)
   const originalSnapshot = useReplayOriginal(value => value)
-  const sessionSnapshot = useSession(value => value)
 
-  const checkpoints = useMemo(
-    () => deriveReplayCheckpoints(sessionSnapshot),
-    [sessionSnapshot],
-  )
+  // The host derives the FULL checkpoint list from the complete session log;
+  // the browser window is paged, so a local derivation would miss earlier turns.
+  const [remoteCheckpoints, setRemoteCheckpoints] = useState<ReplayCheckpoint[] | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    setRemoteCheckpoints(null)
+    void fetchReplayCheckpoints(sessionId).then((list) => {
+      if (!cancelled) setRemoteCheckpoints(list)
+    })
+    return () => { cancelled = true }
+  }, [sessionId])
+  const checkpoints = remoteCheckpoints ?? EMPTY_CHECKPOINTS
   const [mergePref, setMergePref] = useState(true)
   const [notice, setNotice] = useState<string | null>(null)
   const ledger = useMemo(
-    () => deriveStepLedger(childSnapshot, state.checkpoint?.turn ?? 0),
-    [childSnapshot, state.checkpoint],
+    () => deriveStepLedger(
+      childSnapshot,
+      state.replayedTurn !== 0 ? state.replayedTurn : state.checkpoint?.turn ?? 0,
+    ),
+    [childSnapshot, state.checkpoint, state.replayedTurn],
   )
 
   const start = (checkpoint: ReplayCheckpoint, mode: ReplayMode): void => {
     setNotice(null)
     onReplay(checkpoint, { mode, merge: mergePref })
+  }
+
+  // Group the (host-derived, full) checkpoint list by turn: one collapsible
+  // section per turn, turn-level replay buttons on the header and record-level
+  // points folded underneath.
+  const checkpointGroups = useMemo(() => {
+    const byTurn = new Map<number, {
+      inputText: string
+      turnCheckpoint?: ReplayCheckpoint
+      records: ReplayCheckpoint[]
+    }>()
+    for (const checkpoint of checkpoints) {
+      const entry = byTurn.get(checkpoint.turn) ?? { inputText: '', records: [] }
+      if (checkpoint.kind === 'turn') {
+        entry.inputText = checkpoint.inputText
+        entry.turnCheckpoint = checkpoint
+      } else {
+        entry.records.push(checkpoint)
+      }
+      byTurn.set(checkpoint.turn, entry)
+    }
+    return [...byTurn.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([turn, entry]) => ({ turn, ...entry }))
+  }, [checkpoints])
+  const [expandedTurns, setExpandedTurns] = useState<ReadonlySet<number>>(new Set())
+  const toggleTurn = (turn: number): void => {
+    setExpandedTurns(current => {
+      const next = new Set(current)
+      if (next.has(turn)) next.delete(turn)
+      else next.add(turn)
+      return next
+    })
   }
 
   if (state.phase === 'idle') {
@@ -189,34 +233,102 @@ export function ReplayView({
           />
           <span>{t('replay.merge')}</span>
         </label>
-        {checkpoints.length === 0
-          ? <div className={css.placeholder}>{t('replay.noCheckpoint')}</div>
-          : (
+        {remoteCheckpoints === null
+          ? <div className={css.placeholder}>{t('replay.loadingCheckpoints')}</div>
+          : checkpoints.length === 0
+            ? <div className={css.placeholder}>{t('replay.noCheckpoint')}</div>
+            : (
             <div className={css.checkpointList}>
-              {checkpoints.map(checkpoint => (
-                <div key={checkpoint.turn} className={css.checkpointRowWrap}>
-                  <span className={css.checkpointTitle}>{t('replay.fromTurn', { turn: checkpoint.turn })}</span>
-                  <span className={css.checkpointInput}>{checkpoint.inputText.slice(0, 80)}</span>
-                  <span className={css.checkpointActions}>
-                    <button
-                      type="button"
-                      className={css.actionPrimary}
-                      title={t('replay.auto')}
-                      onClick={() => start(checkpoint, 'auto')}
-                    >
-                      ▶ {t('replay.auto')}
-                    </button>
-                    <button
-                      type="button"
-                      className={css.action}
-                      title={t('replay.step')}
-                      onClick={() => start(checkpoint, 'step')}
-                    >
-                      ⏭ {t('replay.step')}
-                    </button>
-                  </span>
-                </div>
-              ))}
+              {checkpointGroups.map(group => {
+                const expanded = expandedTurns.has(group.turn)
+                const turnCheckpoint = group.turnCheckpoint
+                return (
+                  <div key={`turn-${group.turn}`} className={css.turnGroup}>
+                    <div className={css.turnGroupHeader} onClick={() => toggleTurn(group.turn)}>
+                      <button
+                        type="button"
+                        className={css.turnGroupToggle}
+                        aria-expanded={expanded}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          toggleTurn(group.turn)
+                        }}
+                      >
+                        <span className={css.turnGroupCaret} aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+                        <span className={css.turnGroupTitle}>{t('replay.fromTurn', { turn: group.turn })}</span>
+                        {group.records.length > 0 && (
+                          <span className={css.turnGroupCount}>
+                            {t('replay.recordCount', { count: group.records.length })}
+                          </span>
+                        )}
+                      </button>
+                      <span className={css.checkpointInput}>{group.inputText.slice(0, 80)}</span>
+                      {turnCheckpoint !== undefined && (
+                        <span className={css.checkpointActions}>
+                          <button
+                            type="button"
+                            className={css.actionPrimary}
+                            title={t('replay.auto')}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              start(turnCheckpoint, 'auto')
+                            }}
+                          >
+                            ▶ {t('replay.auto')}
+                          </button>
+                          <button
+                            type="button"
+                            className={css.action}
+                            title={t('replay.step')}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              start(turnCheckpoint, 'step')
+                            }}
+                          >
+                            ⏭ {t('replay.step')}
+                          </button>
+                        </span>
+                      )}
+                    </div>
+                    {expanded && group.records.length > 0 && (
+                      <div className={css.turnGroupRecords}>
+                        {group.records.map(checkpoint => (
+                          <div
+                            key={`${checkpoint.kind}:${checkpoint.turn}:${checkpoint.step ?? 0}:${checkpoint.sourceSeq}`}
+                            className={css.checkpointRowWrap}
+                          >
+                            <span className={css.checkpointTitle}>
+                              {t('replay.fromRecord', {
+                                turn: checkpoint.turn,
+                                step: checkpoint.step ?? 0,
+                              })}
+                            </span>
+                            <span className={css.checkpointInput}>{checkpoint.label ?? ''}</span>
+                            <span className={css.checkpointActions}>
+                              <button
+                                type="button"
+                                className={css.actionPrimary}
+                                title={t('replay.auto')}
+                                onClick={() => start(checkpoint, 'auto')}
+                              >
+                                ▶ {t('replay.auto')}
+                              </button>
+                              <button
+                                type="button"
+                                className={css.action}
+                                title={t('replay.step')}
+                                onClick={() => start(checkpoint, 'step')}
+                              >
+                                ⏭ {t('replay.step')}
+                              </button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           )}
       </div>
@@ -244,7 +356,12 @@ export function ReplayView({
         <span className={css.title}>{t('replay.title')}</span>
         {checkpoint !== null && (
           <span className={css.badge}>
-            {t('replay.checkpointBadge', { turn: checkpoint.turn, seq: checkpoint.sourceSeq })}
+            {checkpoint.kind === 'turn'
+              ? t('replay.checkpointBadge', { turn: checkpoint.turn, seq: checkpoint.sourceSeq })
+              : t('replay.checkpointBadgeRecord', {
+                turn: checkpoint.turn,
+                step: checkpoint.step ?? 0,
+              })}
           </span>
         )}
         <span className={css.badge}>{state.mode === 'step' ? t('replay.modeStep') : t('replay.modeAuto')}</span>
@@ -254,6 +371,11 @@ export function ReplayView({
           </span>
         )}
         {busy && <span className={css.live}>{t('replay.running')}</span>}
+        {busy && state.mode === 'step' && (
+          <span className={css.live}>
+            {t('replay.executingStep', { step: state.executedSteps + 1 })}
+          </span>
+        )}
         {paused && <span className={css.paused}>{t('replay.paused')}</span>}
         {state.phase === 'done' && <span className={css.done}>{t('replay.done')}</span>}
         {error !== undefined && <span className={css.error}>{error}</span>}
