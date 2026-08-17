@@ -29,6 +29,7 @@ import {
   type ReplayState,
 } from './replay-state.ts'
 import type { TrajectoryTurnModel } from './layout.ts'
+import type { TrajectoryKey } from './locales.ts'
 import css from './ReplayView.module.css'
 
 /** Session-bound controls injected by the replay registrations. */
@@ -37,21 +38,21 @@ export interface ReplayViewInjected {
     replayState: SnapshotStore<ReplayState>
     replayChild: ObservableSnapshot<ConversationSnapshot | null>
     replayOriginal: ObservableSnapshot<ConversationSnapshot | null>
-    controller: ReplayController
   }
+  /** Plain controller passed through verbatim (not a host observable). */
+  controller: ReplayController
   onReplay: (checkpoint: ReplayCheckpoint, options: { mode: ReplayMode; stopAt?: number; merge?: boolean }) => void
   onReset: () => void
 }
 
 const EMPTY_TURNS = new Set<number>()
 const EMPTY_ASSISTANTS = new Set<string>()
-const EMPTY_CELLS: readonly ReturnType<typeof deriveTrajectoryTableTurns>['turns'][number]['groups'][number]['cells'] = []
 
 interface SideTableProps {
   snapshot: ConversationSnapshot | null
   /** Collapse every turn strictly below this turn number into a merged block. */
   mergeBeforeTurn: number | null
-  t: (key: string, params?: Record<string, string | number>) => string
+  t: (key: TrajectoryKey, params?: Record<string, string | number>) => string
 }
 
 function SideTable({ snapshot, mergeBeforeTurn, t }: SideTableProps) {
@@ -147,7 +148,7 @@ export function ReplayView({
   useReplayState,
   useReplayChild,
   useReplayOriginal,
-  useController,
+  controller,
   onReplay,
   onReset,
   t,
@@ -155,7 +156,6 @@ export function ReplayView({
   const state = useReplayState(value => value)
   const childSnapshot = useReplayChild(value => value)
   const originalSnapshot = useReplayOriginal(value => value)
-  const controller = useController(value => value)
   const sessionSnapshot = useSession(value => value)
 
   const checkpoints = useMemo(

@@ -11,9 +11,11 @@
  * replay into a real workspace session, and exports the trajectory.
  */
 import type {
+  ConversationNode,
   ConversationSnapshot,
   ISessions,
   ObservableSnapshot,
+  RequestView,
   SessionFace,
   SessionId,
   SnapshotStore,
@@ -436,6 +438,8 @@ export interface StepLedgerRow {
 }
 
 const EMPTY_ROWS: readonly StepLedgerRow[] = []
+const EMPTY_REQUESTS: readonly RequestView[] = []
+const EMPTY_NODES: readonly ConversationNode[] = []
 
 /**
  * Build the step ledger for the replayed turn from the child's trajectory
@@ -450,9 +454,9 @@ export function deriveStepLedger(
   turn: number,
 ): readonly StepLedgerRow[] {
   const inspection = snapshot?.views.get('trajectory')
-  const nodes = inspection?.eventNodes ?? EMPTY_ROWS
+  const nodes = inspection?.eventNodes ?? EMPTY_NODES
   const locations = inspection?.eventLocations
-  const requests = inspection?.requests ?? EMPTY_ROWS
+  const requests = inspection?.requests ?? EMPTY_REQUESTS
   if (locations === undefined) return EMPTY_ROWS
 
   type LedgerAccumulator = Map<number, {
@@ -542,8 +546,6 @@ export function buildTrajectoryMarkdown(
     lines.push(`- checkpoint: Turn ${checkpoint.turn}（源 seq ${checkpoint.sourceSeq}，锚点 seq ${checkpoint.anchorSeq}）`)
     lines.push('', '## 重放输入', '', '```text', checkpoint.inputText, '```')
   }
-  const originalTitle = originalSnapshot?.title ?? ''
-  if (originalTitle !== '') lines.push('', `> 来源会话标题: ${originalTitle}`)
   lines.push('', '## 重放执行')
   const rows = checkpoint === null ? [] : deriveStepLedger(childSnapshot, checkpoint.turn)
   if (rows.length === 0) {

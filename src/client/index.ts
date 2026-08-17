@@ -137,8 +137,8 @@ export function apply(ctx: Context): void {
         replayState: replay.state,
         replayChild: replay.child,
         replayOriginal: replay.original,
-        controller: replay,
       },
+      controller: replay,
       onReplay: (checkpoint, options) => {
         preferences.merge = options.merge ?? preferences.merge
         onReplay(sessionId, checkpoint, options)

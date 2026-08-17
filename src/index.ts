@@ -24,11 +24,16 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { rm } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
-import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
+// Type-only: pull the Context merge declarations (webServer / agentDefaultModel).
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 
 export const name = 'dsh-trajectory-replay'
 
@@ -156,7 +161,9 @@ function compositionFor(
   const presetId = resolveSessionPreset({ header: source.header, events: source.events })
   return presets.resolve(presetId).then((resolved: { id: string }) => ({
     agentPreset: resolved.id,
-    setup: (agentCtx) => presets.mount(agentCtx, resolved.id),
+    setup: async (agentCtx: Context & { agent?: Agent }) => {
+      await presets.mount(agentCtx, resolved.id)
+    },
   }))
 }
 
@@ -179,13 +186,6 @@ class ReplayRegistry {
   ids(): SessionId[] {
     return [...this.entries.keys()]
   }
-
-  /** Dispose every live run (plugin teardown). */
-  async disposeAll(): Promise<void> {
-    const entries = [...this.entries.values()]
-    this.entries.clear()
-    await Promise.allSettled(entries.map((entry) => entry.handle.dispose()))
-  }
 }
 
 /**
@@ -194,7 +194,41 @@ class ReplayRegistry {
  */
 export function apply(ctx: Context): void {
   const registry = new ReplayRegistry()
-  ctx.effect(() => () => void registry.disposeAll(), 'dsh-trajectory-replay: dispose runs')
+  // webServer.register returns a caller-owned disposer (routes do not unwind
+  // with the fiber), so keep every disposer and release the routes on teardown
+  // — otherwise a hot reload leaves stale routes and the next apply throws
+  // duplicate-path.
+  const routeDisposers: Array<() => void> = []
+
+  /** Dispose one run: stop the agent, drop the registry entry, and remove the
+   *  persisted artifact so discarded replay children do not linger as cold
+   *  sessions (the persistence seam has no deletion API; this is out-of-band
+   *  best-effort cleanup of the child's own transcript). */
+  const disposeRun = async (childId: SessionId): Promise<void> => {
+    const entry = registry.get(childId)
+    if (entry === undefined) return
+    registry.delete(childId)
+    await entry.handle.dispose()
+    try {
+      const persistence = ctx.get('sessionPersistence')
+      if (persistence !== undefined) {
+        const location = persistence.locate(entry.handle.agent.session.header)
+        if (location !== undefined && location.kind === 'jsonl') {
+          await rm(location.path, { force: true })
+          await rm(dirname(location.path), { recursive: true, force: true })
+        }
+      }
+    } catch (error) {
+      ctx.logger.warn(`dsh-trajectory-replay: replay artifact cleanup failed for "${childId}": ${String(error)}`)
+    }
+  }
+
+  ctx.effect(() => () => {
+    for (const dispose of routeDisposers.splice(0)) {
+      try { dispose() } catch (error) { ctx.logger.warn(`dsh-trajectory-replay: route dispose failed: ${String(error)}`) }
+    }
+    void Promise.allSettled(registry.ids().map((childId) => disposeRun(childId)))
+  }, 'dsh-trajectory-replay: dispose runs')
 
   /** Resolve the live source session for a replay/promote request. */
   const sourceSession = (originalId: unknown): Session | undefined => {
@@ -207,7 +241,7 @@ export function apply(ctx: Context): void {
   }
 
   // ---- POST /api/replay/start -----------------------------------------
-  ctx.webServer.register({
+  routeDisposers.push(ctx.webServer.register({
     kind: 'exact',
     path: '/api/replay/start',
     handler: async (req, res) => {
@@ -236,10 +270,7 @@ export function apply(ctx: Context): void {
 
       // Dispose any previous run before starting a new one.
       for (const childId of registry.ids()) {
-        const previous = registry.get(childId)
-        if (previous === undefined) continue
-        registry.delete(childId)
-        await previous.handle.dispose()
+        await disposeRun(childId)
       }
 
       const cut = forkCut(source.events, anchorSeq)
@@ -316,10 +347,10 @@ export function apply(ctx: Context): void {
 
       respond(res, 200, { ok: true, childId })
     },
-  })
+  }))
 
   // ---- POST /api/replay/control ---------------------------------------
-  ctx.webServer.register({
+  routeDisposers.push(ctx.webServer.register({
     kind: 'exact',
     path: '/api/replay/control',
     handler: async (req, res) => {
@@ -358,10 +389,10 @@ export function apply(ctx: Context): void {
       }
       jsonError(res, 400, 'action must be "continue", "stop", or "undo"')
     },
-  })
+  }))
 
   // ---- POST /api/replay/discard ---------------------------------------
-  ctx.webServer.register({
+  routeDisposers.push(ctx.webServer.register({
     kind: 'exact',
     path: '/api/replay/discard',
     handler: async (req, res) => {
@@ -375,20 +406,19 @@ export function apply(ctx: Context): void {
       }
       const childId = typeof body.childId === 'string' ? SessionId(body.childId) : undefined
       const entry = childId === undefined ? undefined : registry.get(childId)
-      if (entry === undefined) {
+      if (childId === undefined || entry === undefined) {
         respond(res, 200, { ok: true })
         return
       }
-      registry.delete(childId)
-      await entry.handle.dispose()
+      await disposeRun(childId)
       respond(res, 200, { ok: true })
     },
-  })
+  }))
 
   // ---- POST /api/replay/promote ---------------------------------------
   // Export the replay as a real workspace session: copy the child's log into a
   // fresh normal-origin session and attach it to the original's workspace.
-  ctx.webServer.register({
+  routeDisposers.push(ctx.webServer.register({
     kind: 'exact',
     path: '/api/replay/promote',
     handler: async (req, res) => {
@@ -468,7 +498,7 @@ export function apply(ctx: Context): void {
         const target = workspaceId !== undefined
           ? workspaces.get(workspaceId)
           : (source !== undefined
-            ? workspaces.list().find((candidate) => candidate.sessionIds.includes(source.id))
+            ? workspaces.list().find((candidate: { sessionIds: readonly string[] }) => candidate.sessionIds.includes(source.id))
             : undefined)
         if (target !== undefined) {
           try {
@@ -481,7 +511,7 @@ export function apply(ctx: Context): void {
 
       respond(res, 200, { ok: true, sessionId: exportedId })
     },
-  })
+  }))
 
   // ---- Step gate --------------------------------------------------------
   // Pause the child before the next model request once `stopAt` steps of the
